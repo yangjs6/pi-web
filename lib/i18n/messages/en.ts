@@ -125,6 +125,8 @@ export const enLocale: LocalePlugin = {
     "sidebar.rename": "Rename",
     "sidebar.delete": "Delete",
     "sidebar.deleteWithShiftClick": "Delete (Shift+click to delete without confirmation)",
+    "sidebar.pin": "Pin",
+    "sidebar.unpin": "Unpin",
     "sidebar.expandForks": "Expand forks",
     "sidebar.collapseForks": "Collapse forks",
     "sidebar.messagesCount": "{count} msgs",
