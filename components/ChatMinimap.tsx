@@ -17,6 +17,7 @@ interface Props {
   scrollContainer: RefObject<HTMLDivElement | null>;
   messageRefs: RefObject<(HTMLDivElement | null)[]>;
   onRevealHistory: () => void;
+  onScrollToBottom?: () => void;
 }
 
 const MINIMAP_WIDTH = 36;
@@ -232,6 +233,7 @@ export function ChatMinimap({
   scrollContainer,
   messageRefs,
   onRevealHistory,
+  onScrollToBottom,
 }: Props) {
   const [visible, setVisible] = useState(false);
   const [allNodes, setAllNodes] = useState<NodeInfo[]>([]);
@@ -600,37 +602,46 @@ export function ChatMinimap({
 
   return (
     <div
-      ref={containerRef}
-      onMouseDown={handleMouseDown}
-      onMouseEnter={showPreview}
-      onMouseLeave={schedulePreviewHide}
-      onMouseMove={(event) => {
-        const rect = event.currentTarget.getBoundingClientRect();
-        setMouseYRatio((event.clientY - rect.top) / rect.height);
-      }}
       style={{
         width: MINIMAP_WIDTH,
         flexShrink: 0,
-        position: "relative",
-        cursor: "pointer",
-        userSelect: "none",
+        display: "flex",
+        flexDirection: "column",
         borderLeft: "1px solid var(--border)",
         background: "var(--bg-panel)",
         overflow: "visible",
       }}
     >
       <div
-        style={{
-          position: "absolute",
-          left: "50%",
-          top: MINIMAP_PADDING,
-          height: railHeight,
-          width: 1,
-          background: "var(--border)",
-          transform: "translateX(-50%)",
-          zIndex: 0,
+        ref={containerRef}
+        onMouseDown={handleMouseDown}
+        onMouseEnter={showPreview}
+        onMouseLeave={schedulePreviewHide}
+        onMouseMove={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          setMouseYRatio((event.clientY - rect.top) / rect.height);
         }}
-      />
+        style={{
+          flex: 1,
+          minHeight: 0,
+          position: "relative",
+          cursor: "pointer",
+          userSelect: "none",
+          overflow: "visible",
+        }}
+      >
+        <div
+          style={{
+            position: "absolute",
+            left: "50%",
+            top: MINIMAP_PADDING,
+            height: railHeight,
+            width: 1,
+            background: "var(--border)",
+            transform: "translateX(-50%)",
+            zIndex: 0,
+          }}
+        />
 
       {positionedNodes.map((node) => {
         const isNearest = minimapHovered && nearestNode?.index === node.index;
@@ -739,6 +750,41 @@ export function ChatMinimap({
             );
           })}
         </div>
+      )}
+      </div>
+      {onScrollToBottom && (
+        <button
+          onClick={onScrollToBottom}
+          title="Scroll to bottom"
+          aria-label="Scroll to bottom"
+          style={{
+            width: "100%",
+            height: 28,
+            flexShrink: 0,
+            border: "none",
+            borderTop: "1px solid var(--border)",
+            background: "var(--bg-panel)",
+            color: "var(--text-muted)",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 14,
+            transition: "background 0.15s, color 0.15s",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "var(--accent)";
+            e.currentTarget.style.color = "#fff";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "var(--bg-panel)";
+            e.currentTarget.style.color = "var(--text-muted)";
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 5v14M19 12l-7 7-7-7" />
+          </svg>
+        </button>
       )}
     </div>
   );
