@@ -14,6 +14,11 @@ import { checkExtensionDialogSizing, checkExtensionDialogs, extensionSource } fr
 import { checkChatAppearance } from "./chat-appearance.mjs";
 import { checkCodeBackground } from "./code-background.mjs";
 import { checkModelDiscovery } from "./model-discovery.mjs";
+import { checkModelContext } from "./model-context.mjs";
+import { checkModelSelector } from "./model-selector.mjs";
+import { checkFilesPlacement, showSidebarSessions } from "./sidebar.mjs";
+import { checkSessionNavigation } from "./session-navigation.mjs";
+import { checkProjectNavigation, createProjectNavigationFixtures } from "./project-navigation.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const mode = process.env.E2E_SERVER_MODE || "dev";
@@ -143,6 +148,8 @@ try {
     message("reply", "root", "assistant", "E2E wrapper reply"),
   ]);
 
+  const projectNavigation = createProjectNavigationFixtures({ agentDir, sessionDir, timestamp });
+
   const probe = createServer();
   probe.listen(0, "127.0.0.1");
   await once(probe, "listening");
@@ -183,7 +190,7 @@ try {
     const response = await fetch(`${base}/api/sessions`, { signal: AbortSignal.timeout(5000) }).catch(() => null);
     if (response?.ok) {
       const { sessions } = await response.json();
-      assert.deepEqual(sessions.map((session) => session.id).sort(), [LONG, BRANCH, RICH, COMPACTED, APPEND, CODE_BACKGROUND].sort());
+      assert.deepEqual(sessions.map((session) => session.id).sort(), [LONG, BRANCH, RICH, COMPACTED, APPEND, CODE_BACKGROUND, projectNavigation.id].sort());
       break;
     }
     assert.ok(Date.now() < deadline, "Server readiness timed out; see server.log");
@@ -259,6 +266,28 @@ try {
     const sentinel = page.getByText("Scroll up to load earlier messages", { exact: true });
     await sentinel.waitFor({ state: "attached" });
     assert.equal(await page.getByText(text(4949), { exact: true }).count(), 0);
+    // The minimap numbers turns from the session's first, not the loaded page's (#791):
+    // e0..e4949 hold 2475 user messages, so the turn asking text(4998) is 2500.
+    const readMinimapTurn = async (screenshot) => {
+      const node = page.locator("[data-minimap-node-index='0']");
+      await node.waitFor();
+      const rect = await node.boundingBox();
+      assert.ok(rect);
+      await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2);
+      const preview = page.locator("[data-minimap-preview-box]");
+      const turn = preview.locator("[data-minimap-preview-index]").filter({ hasText: text(4998) });
+      const result = {
+        number: await turn.locator("span[aria-hidden='true']").first().textContent(),
+        earlier: await preview.locator("[data-minimap-preview-earlier]").textContent(),
+      };
+      await page.screenshot({ path: join(artifacts, screenshot) });
+      await page.mouse.move(0, 0);
+      await preview.waitFor({ state: "detached" });
+      return result;
+    };
+    if (viewport.width > 600) {
+      assert.deepEqual(await readMinimapTurn("minimap-turns-first-page.png"), { number: "2500", earlier: "Earlier turns not loaded: 2475. Click to load" });
+    }
 
     // Exercise the real IntersectionObserver and prepend path, twice.
     for (let turn = 0; turn < 2; turn++) {
@@ -294,6 +323,12 @@ try {
     // The sidebar also displays the first message as the session title.
     assert.deepEqual(rendered.filter((value) => value !== text(0)),
       Array.from({ length: 5000 - oldest }, (_, i) => text(oldest + i)), "Missing, reordered, or duplicate chat messages");
+    if (viewport.width > 600) {
+      assert.deepEqual(await readMinimapTurn("minimap-turns-paged.png"), {
+        number: "2500",
+        earlier: `Earlier turns not loaded: ${oldest / 2}. Click to load`,
+      }, "Loading older pages must not renumber minimap turns");
+    }
     await page.screenshot({ path: join(artifacts, `history-${viewport.width}.png`) });
 
     await page.goto(`${base}/?session=${BRANCH}`, { waitUntil: "domcontentloaded" });
@@ -377,8 +412,17 @@ try {
       });
       await page.screenshot({ path: join(artifacts, "compaction-minimap.png") });
 
+      // A session row of the sidebar's sessions, found by its visible title
+      // (the row's tooltip adds message count and time, so no exact title match).
+      const sessionRow = (title) => page.locator("#session-sidebar-panel-sessions .session-tree-session").filter({
+        has: page.locator(".session-tree-title", { hasText: new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }),
+      });
+      const clickSessionRow = async (title) => {
+        await showSidebarSessions(page);
+        await sessionRow(title).locator(".session-tree-main").click();
+      };
       const selectSession = async (title, entryId) => {
-        await page.locator(`[title="${title}"]`).click();
+        await clickSessionRow(title);
         await page.locator(`[data-entry-id="${entryId}"]:not([data-message-role])`).waitFor({ state: "visible" });
       };
       const readingOffset = (target) => target.evaluate((element) => (
@@ -421,7 +465,7 @@ try {
       await page.route(agentRoute, (route) => route.fulfill({ json: {} }));
       try {
         const pendingHistory = page.waitForRequest((request) => request.url().includes(`/api/sessions/${LONG}/context?`) && new URL(request.url()).searchParams.has("before"));
-        await page.locator(`[title="${text(0)}"]`).click();
+        await clickSessionRow(text(0));
         await pendingHistory;
         await page.getByRole("button", { name: "Branches", exact: true }).click();
         await page.getByText("E2E alternate history branch", { exact: true }).click();
@@ -450,13 +494,26 @@ try {
       const hideSidebar = page.getByRole("button", { name: "Hide sidebar", exact: true });
       const showSidebar = page.getByRole("button", { name: "Show sidebar", exact: true });
       await hideSidebar.or(showSidebar).waitFor({ state: "visible" });
-      if (await showSidebar.isVisible()) await showSidebar.click();
+      // That effect can also open the sidebar between the visible check and the click, so "Show sidebar" is
+      // gone and the click waits its full 30s for a button that will not come back. Retry against a short
+      // deadline: only the click's own timeout is ignored, and the wait below still fails if the sidebar
+      // never opens.
+      for (let attempt = 0; attempt < 5 && !(await hideSidebar.isVisible()); attempt++) {
+        await showSidebar.click({ timeout: 1_000 }).catch(() => {});
+        await page.waitForTimeout(200);
+      }
       await hideSidebar.waitFor({ state: "visible" });
+      // The files sit below the sessions on a desktop; Settings › General ›
+      // File browser brings the tabs back, and goes back.
+      await checkFilesPlacement(page);
+      console.log("PASS: files below the sessions by default, tabs from Settings and back");
       await checkModelDiscovery(page);
     }
+    await checkModelContext(page);
     await page.goto(`${base}/?session=${CODE_BACKGROUND}`, { waitUntil: "domcontentloaded" });
     await page.locator(".markdown-code-block pre").waitFor();
     await checkCodeBackground(page);
+    await checkModelSelector(page, { base, project, artifacts });
     assert.deepEqual(errors, [], `Browser errors at width ${viewport.width}`);
     console.log(`PASS: ${viewport.width}px browser pagination, branch, markdown, code, tool call, and compaction navigation`);
     await context.tracing.stop();
@@ -464,6 +521,21 @@ try {
     context = undefined;
     page = undefined;
   }
+  // Last, in its own context and tabs, so the checks above run as before. It
+  // restores the sidebar state (pins, archive) and deletes the fork it makes.
+  await checkSessionNavigation({
+    browser,
+    base,
+    artifacts,
+    a: { id: BRANCH, entry: "new", text: "Active branch answer" },
+    b: { id: CODE_BACKGROUND, entry: "answer", text: "const x = 1;" },
+    api,
+    deleteSession: async (id) => {
+      const response = await fetch(`${base}/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE", signal: AbortSignal.timeout(30_000) });
+      assert.ok(response.ok, `DELETE session ${id} -> ${response.status}`);
+    },
+  });
+  await checkProjectNavigation({ browser, base, artifacts, fixture: projectNavigation, otherSessionId: BRANCH, api, post });
 } catch (error) {
   console.error(error);
   process.exitCode = 1;
