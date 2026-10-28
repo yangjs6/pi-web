@@ -123,9 +123,11 @@
   color: var(--text-muted);
 }
 
-/* Pinned section header: the whole row toggles the section. A section
-   label, not a project: its chevron in the groups' chevron column, the
-   label where the session titles start, small capitals in the label color. */
+/* A section header (Pinned, Sessions, Archived): the whole row toggles the
+   section. Its chevron in the groups' chevron column, the label where the
+   session titles start, in the group headers' type: 12px/600, the label
+   color (`--text` while hovered, as a group's), no small capitals, so the
+   three sections read as one another. */
 .session-tree-pinned-header {
   align-items: stretch;
 }
@@ -138,7 +140,8 @@
   min-width: 0;
   padding: 0 8px 0 calc(var(--session-tree-inset-left) + 5px);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 600;
   text-align: left;
 }
 
@@ -148,8 +151,6 @@
 
 .session-tree-pinned-label {
   font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
 }
 
 .session-tree-pinned-count {
@@ -1377,6 +1378,67 @@ a.session-tree-main {
   to {
     opacity: 0;
     transform: translateX(14px);
+  }
+}
+
+/* The sessions' project box (the same picker the files have, without the
+   checkout), at the top of the panel and showing what is open now, then the
+   panel's quick keys: New, Refresh and the project's ⋯ (its group header's
+   menu in the multi-project tree). */
+.sidebar-sessions-picker {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 8px 8px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-sessions-picker .project-picker {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-project-menu-button {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.sidebar-project-menu-button:hover,
+.sidebar-project-menu-button.is-active {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.sidebar-project-menu-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.sidebar-project-menu-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+@media (pointer: coarse) {
+  .sidebar-sessions-picker {
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .sidebar-project-menu-button {
+    width: 32px;
+    height: 32px;
   }
 }
 

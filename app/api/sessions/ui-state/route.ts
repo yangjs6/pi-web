@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import {
+  importLegacyPinnedSessions,
   readSessionUiState,
   SessionUiStateLockedError,
   updateSessionUiState,
@@ -30,7 +31,11 @@ function refusal(status: number, reason: SessionUiStateRefusalReason, error: str
 }
 
 // GET /api/sessions/ui-state
+// Also the one place the pins of the removed /api/sessions/pinned route
+// (`pinned-sessions.json`) come across: the sidebar reads its state here
+// before it renders, so the pins are in place for its first tree.
 export async function GET() {
+  await importLegacyPinnedSessions();
   return NextResponse.json({ state: readSessionUiState() } satisfies SessionUiStateResponse, { headers: NO_STORE });
 }
 

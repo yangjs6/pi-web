@@ -75,6 +75,12 @@ interface Props {
   projectActivity?: ReadonlyMap<string, { running: number; unread: number }>;
   /** The files' (stacked or row), without a worktree list: a disabled box saying why (a subdirectory of a checkout, still checking). None for a folder outside git: the project box alone. */
   worktreeHint?: { label: string; title: string } | null;
+  /**
+   * Whether the worktree box (and its menu) shows. False for a picker that
+   * only switches projects (the sessions panel): the branch belongs to the
+   * files and the composer's bar, where a checkout is chosen for a folder.
+   */
+  showWorktree?: boolean;
   /** The "New worktree…" form's title. */
   newWorktreeTitle: string;
   handleRef?: Ref<ProjectWorktreePickerHandle>;
@@ -207,6 +213,7 @@ export function ProjectWorktreePicker({
   homeDir,
   projectActivity,
   worktreeHint = null,
+  showWorktree = true,
   newWorktreeTitle,
   handleRef,
   onPick,
@@ -236,7 +243,10 @@ export function ProjectWorktreePicker({
   // "Custom path…", the "New worktree…" form under the list, a dirty
   // checkout's question in its row. A phone keeps the sheet.
   const classic = !mobile;
-  const { project, worktrees } = context;
+  const { project } = context;
+  // A project-only picker (the sessions panel's) has no checkout box: which
+  // worktree a new session starts in is the composer's bar's choice.
+  const worktrees = showWorktree ? context.worktrees : null;
   const current = currentWorktreeOf(context);
   // Inline, the project's name as the menus name it: its display name, else
   // its folder's, with the parent folder only where two projects share it.
@@ -570,7 +580,7 @@ export function ProjectWorktreePicker({
           <ChevronIcon size={9} className="project-picker-chevron sidebar-icon-down" />
         </button>
       )}
-      {!worktrees && stacked && worktreeHint && (
+      {showWorktree && !worktrees && stacked && worktreeHint && (
         <button type="button" aria-disabled="true" tabIndex={-1} title={worktreeHint.title} className="project-picker-button is-inactive">
           <BranchIcon size={11} className="project-picker-icon" />
           <span className="project-picker-label">{worktreeHint.label}</span>

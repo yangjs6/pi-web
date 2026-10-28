@@ -1,9 +1,11 @@
 /**
  * Per-browser sidebar preferences: the active tab (sessions or files), the
  * user's explicit project group expand/collapse choices, the archive view's
- * folded projects, whether the pinned section is collapsed, whether the files section below the sessions is
- * collapsed, whether the files tab or section lists ignored files, and the
- * folders the worktree listing last found outside git.
+ * folded projects, whether the pinned section is collapsed, the
+ * single-project view's sessions and archive sections, whether the files
+ * section below the sessions is collapsed, whether the files tab or section
+ * lists ignored files, and the folders the worktree listing last found
+ * outside git.
  * Best-effort localStorage, like the other sidebar memories: privacy mode or
  * quota errors fall back to defaults.
  */
@@ -21,6 +23,8 @@ const ARCHIVE_COLLAPSED_STORAGE_KEY = "pi-web:sidebar-archive-collapsed";
 const PINNED_COLLAPSED_STORAGE_KEY = "pi-web:sidebar-pins-collapsed";
 const SHOW_IGNORED_FILES_STORAGE_KEY = "pi-web:sidebar-files-show-ignored";
 const FILES_COLLAPSED_STORAGE_KEY = "pi-web:sidebar-files-collapsed";
+const ARCHIVED_SECTION_OPEN_STORAGE_KEY = "pi-web:sidebar-archived-open";
+const SESSIONS_COLLAPSED_STORAGE_KEY = "pi-web:sidebar-sessions-collapsed";
 const NON_GIT_CWDS_STORAGE_KEY = "pi-web:sidebar-non-git-cwds";
 /**
  * Keys nothing reads now: the sessions/explorer split's, which the two tabs
@@ -223,6 +227,53 @@ export function saveFilesCollapsed(
   if (!storage) return;
   try {
     storage.setItem(FILES_COLLAPSED_STORAGE_KEY, String(collapsed));
+  } catch {
+    // Persistence is best-effort.
+  }
+}
+
+/**
+ * The single-project view's archive section: open (its archived rows under
+ * the sessions) or folded to its header. Closed until the user opens it.
+ */
+export function loadArchivedSectionOpen(storage: StorageLike | null = getBrowserStorage()): boolean {
+  if (!storage) return false;
+  try {
+    return storage.getItem(ARCHIVED_SECTION_OPEN_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function saveArchivedSectionOpen(
+  open: boolean,
+  storage: StorageLike | null = getBrowserStorage(),
+): void {
+  if (!storage) return;
+  try {
+    storage.setItem(ARCHIVED_SECTION_OPEN_STORAGE_KEY, String(open));
+  } catch {
+    // Persistence is best-effort.
+  }
+}
+
+/** The single-project view's "Sessions" section: folded to its header or listed. */
+export function loadSessionsCollapsed(storage: StorageLike | null = getBrowserStorage()): boolean {
+  if (!storage) return false;
+  try {
+    return storage.getItem(SESSIONS_COLLAPSED_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function saveSessionsCollapsed(
+  collapsed: boolean,
+  storage: StorageLike | null = getBrowserStorage(),
+): void {
+  if (!storage) return;
+  try {
+    storage.setItem(SESSIONS_COLLAPSED_STORAGE_KEY, String(collapsed));
   } catch {
     // Persistence is best-effort.
   }

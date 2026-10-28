@@ -43,6 +43,7 @@ import {
   FolderPlusIcon,
   MoreIcon,
   PinIcon,
+  PinOffIcon,
   PlusIcon,
   RestoreIcon,
   SpinnerIcon,
@@ -112,6 +113,16 @@ export interface SessionTreeProps {
   /** Back to the base limit; key is a projectKey or PINNED_MORE_KEY. */
   onShowLess(key: string): void;
   onTogglePinned(): void;
+  /** The single-project view's "Sessions" section: its rows fold to its header. */
+  onToggleSessionsSection?(): void;
+  /** Pin or unpin a family: a row's quick pin button, and the pinned row's unpin. */
+  onToggleFamilyPin(family: SessionFamily): void;
+  /**
+   * Show a pinned row's project in place of its time (the multi-project
+   * tree). The single-project view passes false: the only project its rows
+   * can belong to is the one the dropdown names.
+   */
+  showPinnedProject?: boolean;
   onArchiveFamily(family: SessionFamily): void;
   onRestoreFamily(family: SessionFamily): void;
   onOpenRowMenu(row: SessionRow, anchor: SidebarMenuAnchor, opener: HTMLElement | null): void;
@@ -134,6 +145,13 @@ export interface SessionTreeProps {
   onArchiveGroupMenu?(project: SidebarProject, opener: HTMLElement): void;
   onOpenOtherProject(opener: HTMLElement): void;
   onOpenArchive(): void;
+  /**
+   * The label of an archive header whose project shows inline at the bottom
+   * of the tree (the single-project view): "Archived" there, instead of the
+   * project's name, which the project box above already shows. Absent: the
+   * project's name (the archive view's per-project headers).
+   */
+  archiveSectionLabel?: string | null;
   /** Scroll a row into view (and maybe focus it); see SessionTreeReveal. */
   reveal?: SessionTreeReveal | null;
   /** The reveal request with this id was scrolled to or dropped: the parent lets go of it. */
@@ -391,7 +409,12 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
     }
   }, [visibleIndices]);
 
-  const hasTreeRows = rows.some((row) => row.kind === "session" || row.kind === "group");
+  // The empty label belongs to a tree with nothing of its own to show: any
+  // row (a section header, the empty note) means the panel has content.
+  const hasTreeRows = rows.some((row) => (
+    row.kind === "session" || row.kind === "group" || row.kind === "group-empty"
+    || row.kind === "pinned-header" || row.kind === "sessions-header"
+  ));
   const showEmpty = !loading && !error && emptyLabel !== null && !hasTreeRows;
   // While dragging: the group's block is dimmed in place (groups never fold
   // up under the pointer), a line marks the drop, and a pill with the
@@ -438,12 +461,23 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
                     renaming={row.family.root.id === renamingRootId}
                     confirming={row.family.root.id === confirmDeleteRootId}
                     menuOpen={menuOpen}
+                    showPinnedProject={props.showPinnedProject !== false}
                     handlers={handlersRef}
                   />
                 );
               }
               if (row.kind === "archive-group") {
-                return <ArchiveGroupRowView key={row.key} row={row} top={top} height={height} menuOpen={menuOpen} handlers={handlersRef} />;
+                return (
+                  <ArchiveGroupRowView
+                    key={row.key}
+                    row={row}
+                    top={top}
+                    height={height}
+                    menuOpen={menuOpen}
+                    label={props.archiveSectionLabel}
+                    handlers={handlersRef}
+                  />
+                );
               }
               if (row.kind === "group") {
                 const renaming = row.project.key === renamingProjectKey;
@@ -500,6 +534,7 @@ const SessionRowView = memo(function SessionRowView({
   renaming,
   confirming,
   menuOpen,
+  showPinnedProject,
   handlers,
 }: {
   row: SessionRow;
@@ -510,6 +545,8 @@ const SessionRowView = memo(function SessionRowView({
   renaming: boolean;
   confirming: boolean;
   menuOpen: boolean;
+  /** Whether a pinned row's meta names its project (else its time). */
+  showPinnedProject: boolean;
   handlers: Handlers;
 }) {
   const { locale, t } = useI18n();
@@ -600,7 +637,7 @@ const SessionRowView = memo(function SessionRowView({
     meta = <span className="session-tree-unread" role="img" aria-label={t("sidebar.newSessionActivity")} />;
     metaState = " is-unread";
     metaTitle = t("sidebar.newActivity");
-  } else if (context === "pinned") {
+  } else if (context === "pinned" && showPinnedProject) {
     meta = <span className="session-tree-project">{row.project.name}</span>;
   } else if (context === "archive" && row.archivedAt !== null) {
     meta = formatShortRelativeTime(new Date(row.archivedAt), locale, nowDate);
@@ -608,6 +645,10 @@ const SessionRowView = memo(function SessionRowView({
     meta = formatShortRelativeTime(family.latestModified, locale, nowDate);
   }
 
+  // Pin and unpin one click away (desktop only): the pinned section's own
+  // rows unpin, the others pin. An archived row's pin lives in its menu,
+  // where pinning it is seen as the restore it does.
+  const showPinAction = layout === "desktop" && context !== "archive";
   // Archive (or restore) one click away: desktop only, never for a running
   // family, which would come straight back.
   const quickAction = layout === "desktop" && (context === "archive" || !status.running);
@@ -668,6 +709,20 @@ const SessionRowView = memo(function SessionRowView({
       )}
       {!status.transient && (
         <span className="session-tree-actions">
+          {showPinAction && (
+            <button
+              type="button"
+              className="session-tree-action session-tree-quick-action"
+              aria-label={t(context === "pinned" ? "sidebar.unpin" : "sidebar.pin")}
+              title={t(context === "pinned" ? "sidebar.unpin" : "sidebar.pin")}
+              onClick={(event) => {
+                event.stopPropagation();
+                handlers.current.onToggleFamilyPin(family);
+              }}
+            >
+              {context === "pinned" ? <PinOffIcon size={13} /> : <PinIcon size={13} />}
+            </button>
+          )}
           {quickAction && (context === "archive" ? (
             <button
               type="button"
@@ -963,6 +1018,63 @@ const GroupRowView = memo(function GroupRowView({
   );
 });
 
+/**
+ * A section header (Pinned, Sessions): the chevron, the label, the count
+ * from 1 on, and, while folded, the running and unread dots. The archive
+ * section's header is an archive group's (it carries the project's ⋯).
+ */
+const SectionHeaderRow = memo(function SectionHeaderRow({
+  rowKey,
+  label,
+  count,
+  collapsed,
+  running,
+  unread,
+  onToggle,
+  style,
+}: {
+  rowKey: string;
+  label: string;
+  count: number;
+  collapsed: boolean;
+  running: number;
+  unread: number;
+  onToggle?: () => void;
+  style: { top: number; height: number };
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="session-tree-row session-tree-pinned-header" style={style} data-row-key={rowKey}>
+      <button
+        type="button"
+        className="session-tree-pinned-toggle"
+        aria-expanded={!collapsed}
+        onClick={onToggle}
+      >
+        <ChevronIcon size={12} strokeWidth={3} className={`session-tree-chevron${collapsed ? "" : " is-open"}`} />
+        <span className="session-tree-pinned-label">{label}</span>
+        {count > 0 && <span className="session-tree-pinned-count">· {count}</span>}
+        {collapsed && running > 0 && (
+          <span
+            className="session-tree-pinned-dot is-running"
+            role="img"
+            title={t("sidebar.agentRunning")}
+            aria-label={`${t("sidebar.agentRunning")} (${running})`}
+          />
+        )}
+        {collapsed && unread > 0 && (
+          <span
+            className="session-tree-pinned-dot is-unread"
+            role="img"
+            title={t("sidebar.newSessionActivity")}
+            aria-label={`${t("sidebar.newSessionActivity")} (${unread})`}
+          />
+        )}
+      </button>
+    </div>
+  );
+});
+
 /** The rows with at most one control: section headers, "show more", footer links. */
 const PlainRowView = memo(function PlainRowView({
   row,
@@ -981,36 +1093,31 @@ const PlainRowView = memo(function PlainRowView({
   const style = rowStyle(top, height);
 
   switch (row.kind) {
+    case "sessions-header":
+      return (
+        <SectionHeaderRow
+          rowKey={row.key}
+          label={t("sidebar.tabSessions")}
+          count={row.count}
+          collapsed={row.collapsed}
+          running={row.running}
+          unread={row.unread}
+          onToggle={() => handlers.current.onToggleSessionsSection?.()}
+          style={style}
+        />
+      );
     case "pinned-header":
       return (
-        <div className="session-tree-row session-tree-pinned-header" style={style} data-row-key={row.key}>
-          <button
-            type="button"
-            className="session-tree-pinned-toggle"
-            aria-expanded={!row.collapsed}
-            onClick={() => handlers.current.onTogglePinned()}
-          >
-            <ChevronIcon size={12} strokeWidth={3} className={`session-tree-chevron${row.collapsed ? "" : " is-open"}`} />
-            <span className="session-tree-pinned-label">{t("sidebar.pinned")}</span>
-            <span className="session-tree-pinned-count">· {row.count}</span>
-            {row.collapsed && row.running > 0 && (
-              <span
-                className="session-tree-pinned-dot is-running"
-                role="img"
-                title={t("sidebar.agentRunning")}
-                aria-label={`${t("sidebar.agentRunning")} (${row.running})`}
-              />
-            )}
-            {row.collapsed && row.unread > 0 && (
-              <span
-                className="session-tree-pinned-dot is-unread"
-                role="img"
-                title={t("sidebar.newSessionActivity")}
-                aria-label={`${t("sidebar.newSessionActivity")} (${row.unread})`}
-              />
-            )}
-          </button>
-        </div>
+        <SectionHeaderRow
+          rowKey={row.key}
+          label={t("sidebar.pinned")}
+          count={row.count}
+          collapsed={row.collapsed}
+          running={row.running}
+          unread={row.unread}
+          onToggle={() => handlers.current.onTogglePinned()}
+          style={style}
+        />
       );
     case "pinned-more":
     case "group-more": {
@@ -1082,19 +1189,25 @@ const ArchiveGroupRowView = memo(function ArchiveGroupRowView({
   top,
   height,
   menuOpen,
+  label,
   handlers,
 }: {
   row: Extract<SidebarRow, { kind: "archive-group" }>;
   top: number;
   height: number;
   menuOpen: boolean;
+  /** Shown instead of the project's name (the inline archive section). */
+  label?: string | null;
   handlers: Handlers;
 }) {
   const { t } = useI18n();
   const { project, expanded } = row;
   const className = [
     "session-tree-row session-tree-group session-tree-archive-group",
-    project.current ? "is-current" : "",
+    // The inline archive section (it has a label of its own) is no project
+    // header: it keeps the section labels' color instead of the current
+    // project's brighter one.
+    label == null && project.current ? "is-current" : "",
     menuOpen ? "is-active" : "",
   ].filter(Boolean).join(" ");
   return (
@@ -1107,8 +1220,8 @@ const ArchiveGroupRowView = memo(function ArchiveGroupRowView({
         onClick={(event) => handlers.current.onToggleArchiveGroup?.(project.key, event.altKey)}
       >
         <ChevronIcon size={12} strokeWidth={3} className={`session-tree-chevron${expanded ? " is-open" : ""}`} />
-        <span className="session-tree-group-name">{project.name}</span>
-        <span className="session-tree-archive-group-count">· {row.count}</span>
+        <span className="session-tree-group-name">{label ?? project.name}</span>
+        {row.count > 0 && <span className="session-tree-archive-group-count">· {row.count}</span>}
       </button>
       <span className="session-tree-group-actions">
         <button

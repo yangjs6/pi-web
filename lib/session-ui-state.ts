@@ -9,6 +9,7 @@ import {
   applySessionUiStateRequest,
   emptySessionUiState,
   normalizeSessionUiState,
+  SESSION_ID_PATTERN,
   SESSION_UI_STATE_VERSION,
   type SessionUiState,
   type SessionUiStateRequest,
@@ -90,6 +91,9 @@ function copyState(state: SessionUiState): SessionUiState {
 export function getSessionUiStatePath(agentDir = getAgentDir()): string {
   return join(agentDir, "pi-web-session-state.json");
 }
+
+/** Where the sidebar's pins lived before they moved into this file. */
+const LEGACY_PINS_FILE = "pinned-sessions.json";
 
 type Parsed = { ok: true; state: SessionUiState; raw: Record<string, unknown> } | { ok: false };
 
@@ -255,6 +259,67 @@ export function updateSessionUiState(request: SessionUiStateRequest, path?: stri
     return Promise.reject(error);
   }
   return editState(target, (state) => applySessionUiStateRequest(state, request, Date.now()));
+}
+
+/**
+ * Imports the pin list the removed `app/api/sessions/pinned` route wrote
+ * (`pinned-sessions.json`: the root ids the early sidebar's pin button
+ * saved), once, then sets the file aside as `.migrated-<time>`. The pins
+ * become ordinary `pinnedAt` entries, so the pinned section, archive and
+ * project menus handle them like any other pin. Ids are checked as a
+ * request's are; a file that is not a list of them is set aside as
+ * `.invalid-<time>` rather than retried on every read. Never throws: a
+ * migration that could not write leaves the file for the next read.
+ */
+export async function importLegacyPinnedSessions(agentDir?: string): Promise<number> {
+  let dir: string;
+  try {
+    dir = agentDir ?? getAgentDir();
+  } catch {
+    return 0;
+  }
+  const legacy = join(dir, LEGACY_PINS_FILE);
+  let text: string | undefined;
+  try {
+    text = readRegularFileText(legacy, MAX_BYTES);
+  } catch (error) {
+    // Not a regular file (a FIFO, a link to one), unreadable or too large:
+    // not a pin list this build wrote, so leave it to a human.
+    console.warn(`[pi-web] could not read ${legacy}: ${error instanceof Error ? error.message : String(error)}`);
+    return 0;
+  }
+  if (text === undefined) return 0;
+
+  let ids: string[];
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!Array.isArray(parsed)) throw new Error("not a list");
+    ids = [...new Set(parsed.filter((id): id is string => typeof id === "string" && SESSION_ID_PATTERN.test(id)))];
+  } catch {
+    try {
+      const invalid = `${legacy}.invalid-${Date.now()}`;
+      renameSync(legacy, invalid);
+      console.warn(`[pi-web] ${legacy} is not a list of session ids; moved it to ${invalid}`);
+    } catch {
+      // Left where it is; the next read reports it again.
+    }
+    return 0;
+  }
+
+  try {
+    if (ids.length > 0) {
+      // Same rule as a pin click: an id already archived is restored by it.
+      await editState(getSessionUiStatePath(dir), (state) => (
+        applySessionUiStateRequest(state, { action: "set", ids, pinned: true }, Date.now())
+      ));
+    }
+    // Set aside even when it held no usable id: the migration is done with it.
+    renameSync(legacy, `${legacy}.migrated-${Date.now()}`);
+  } catch (error) {
+    console.warn(`[pi-web] could not import ${legacy}: ${error instanceof Error ? error.message : String(error)}`);
+    return 0;
+  }
+  return ids.length;
 }
 
 /** Removes those session entries; no-op (no write) if none present. */

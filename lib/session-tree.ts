@@ -24,7 +24,7 @@ import { workspaceKeyOf } from "./workspace-memory";
 
 export type SidebarLayout = "desktop" | "mobile";
 export type SidebarRowKind =
-  | "pinned-header" | "session" | "pinned-more" | "group" | "group-more" | "group-empty"
+  | "pinned-header" | "sessions-header" | "session" | "pinned-more" | "group" | "group-more" | "group-empty"
   | "spacer" | "footer-open" | "footer-archived" | "archive-group";
 
 /**
@@ -36,8 +36,8 @@ export type SidebarRowKind =
  * footer; groups themselves sit right on each other, with none between them.
  */
 export const SIDEBAR_ROW_HEIGHTS: Record<SidebarLayout, Record<SidebarRowKind, number>> = {
-  desktop: { "pinned-header": 28, session: 28, "pinned-more": 26, group: 28, "group-more": 26, "group-empty": 28, spacer: 8, "footer-open": 28, "footer-archived": 28, "archive-group": 28 },
-  mobile: { "pinned-header": 44, session: 44, "pinned-more": 36, group: 44, "group-more": 36, "group-empty": 44, spacer: 8, "footer-open": 44, "footer-archived": 44, "archive-group": 44 },
+  desktop: { "pinned-header": 28, "sessions-header": 28, session: 28, "pinned-more": 26, group: 28, "group-more": 26, "group-empty": 28, spacer: 8, "footer-open": 28, "footer-archived": 28, "archive-group": 28 },
+  mobile: { "pinned-header": 44, "sessions-header": 44, session: 44, "pinned-more": 36, group: 44, "group-more": 36, "group-empty": 44, spacer: 8, "footer-open": 44, "footer-archived": 44, "archive-group": 44 },
 };
 export const GROUP_VISIBLE_LIMIT = 6;
 export const PINNED_VISIBLE_LIMIT = 8;
@@ -55,6 +55,7 @@ export interface SidebarFamilyStatus { running: boolean; awaiting: boolean; unre
 
 export type SidebarRow =
   | { kind: "pinned-header"; key: "pinned-header"; count: number; collapsed: boolean; running: number; unread: number }
+  | { kind: "sessions-header"; key: "sessions-header"; count: number; collapsed: boolean; running: number; unread: number }
   | { kind: "session"; key: string; family: SessionFamily; context: "pinned" | "group" | "archive"; project: SidebarProject; status: SidebarFamilyStatus; archivedAt: number | null }
   | { kind: "pinned-more"; key: "pinned-more"; hidden: number; canShowLess: boolean; nextShown: number }
   | { kind: "group"; key: string; project: SidebarProject; expanded: boolean; running: number; unread: number }
@@ -84,12 +85,30 @@ export interface SessionTreeInput {
   /** Families revealed beyond the base limit by "show more", per projectKey or PINNED_MORE_KEY. */
   moreShown: Readonly<Record<string, number>>;
   pinnedCollapsed: boolean;
+  /**
+   * Show one project only, without a group header: the sidebar's
+   * single-project view, where the project box above the tree switches
+   * projects. Its three sections (pinned, sessions, archive) and the
+   * archived count are the focused project's alone. Absent or null: every
+   * project as a group.
+   */
+  focusProject?: string | null;
+  /**
+   * The focused project's archived sessions show inline, under an archive
+   * section header at the bottom of the list (the sidebar's fold), instead of
+   * only being counted. A focused tree has no footer rows either way.
+   */
+  archivedExpanded?: boolean;
+  /** The focused project's sessions fold to their header (the sidebar's own section). */
+  sessionsCollapsed?: boolean;
 }
 
 export interface SessionTreeModel {
   rows: SidebarRow[];
-  /** Projects in group order. */
+  /** Projects in group order. With `focusProject`, the focused project and the pinned ones (no rows for the latter). */
   projects: SidebarProject[];
+  /** Whether `rows` show one project only (`focusProject`). */
+  singleProject: boolean;
   /** Archived families across all projects. */
   archivedCount: number;
   /**
@@ -403,10 +422,13 @@ function moreRowState(total: number, visible: number, revealed: number): { hidde
 
 export function buildSessionTree(input: SessionTreeInput): SessionTreeModel {
   const { uiState, runningIds, currentProject } = input;
+  const focus = input.focusProject ?? null;
   const families = listSessionFamilies(input.sessions);
   const resolver = createProjectResolver(uiState, currentProject);
 
   let archivedCount = 0;
+  // The focused project's archived families, for its inline archive section.
+  const focusedArchived: { family: SessionFamily; archivedAt: number }[] = [];
   const pinnedFamilies: SessionFamily[] = [];
   // Insertion order follows family activity (newest first).
   const projectFamilies = new Map<string, SessionFamily[]>();
@@ -415,12 +437,17 @@ export function buildSessionTree(input: SessionTreeInput): SessionTreeModel {
   const savedKeys = new Set<string>();
 
   for (const family of families) {
+    // A focused tree counts and shows its own project's families only.
+    const key = familyProjectKey(family);
+    if (focus !== null && key !== focus) continue;
     if (isFamilyArchived(family, uiState, runningIds)) {
       archivedCount++;
+      if (focus !== null) {
+        focusedArchived.push({ family, archivedAt: finiteNumber(familyEntry(uiState, family.root.id)?.archivedAt) ?? 0 });
+      }
       continue;
     }
     resolver.noteFamily(family);
-    const key = familyProjectKey(family);
     const activity = timeOf(family.latestModified);
     projectActivity.set(key, Math.max(projectActivity.get(key) ?? -Infinity, activity));
     if (!family.root.transient) savedKeys.add(key);
@@ -435,8 +462,11 @@ export function buildSessionTree(input: SessionTreeInput): SessionTreeModel {
 
   const rows: SidebarRow[] = [];
 
-  // Pinned section: newest pin first; ties keep family activity order.
-  if (pinnedFamilies.length > 0) {
+  // Pinned section: newest pin first; ties keep family activity order. In the
+  // single-project view the header always shows, also with nothing pinned: it
+  // is one of the three sections the panel has (`sessions-header`, this one,
+  // the archive's), so the feature never looks missing.
+  if (pinnedFamilies.length > 0 || focus !== null) {
     const pinnedAt = (family: SessionFamily) => finiteNumber(familyEntry(uiState, family.root.id)?.pinnedAt) ?? 0;
     const sorted = pinnedFamilies
       .map((family, index) => ({ family, index }))
@@ -509,18 +539,21 @@ export function buildSessionTree(input: SessionTreeInput): SessionTreeModel {
     .filter((project) => !rank.has(project.key) && recordable(project))
     .map((project) => project.key);
 
-  for (const project of orderedProjects) {
-    const groupFamilies = projectFamilies.get(project.key) ?? [];
-    const expanded = isGroupExpanded(project, input.groupExpansion);
-    let running = 0;
-    let unread = 0;
-    for (const family of groupFamilies) {
-      if (anyMemberIn(family, runningIds)) running++;
-      if (anyMemberIn(family, input.unreadIds)) unread++;
+  // A project's rows: its header (except while one project is focused, whose
+  // name the project box above the tree already carries), then its sessions
+  // or the empty note while it has none.
+  const pushProject = (project: SidebarProject, groupFamilies: SessionFamily[], expanded: boolean) => {
+    if (focus === null) {
+      let running = 0;
+      let unread = 0;
+      for (const family of groupFamilies) {
+        if (anyMemberIn(family, runningIds)) running++;
+        if (anyMemberIn(family, input.unreadIds)) unread++;
+      }
+      rows.push({ kind: "group", key: `group:${project.key}`, project, expanded, running, unread });
     }
-    rows.push({ kind: "group", key: `group:${project.key}`, project, expanded, running, unread });
-
-    if (expanded) {
+    // Fold choices only fold project groups: the focused project always lists.
+    if (focus !== null || expanded) {
       if (groupFamilies.length === 0) {
         rows.push({ kind: "group-empty", key: `empty:${project.key}`, project });
       } else {
@@ -530,6 +563,47 @@ export function buildSessionTree(input: SessionTreeInput): SessionTreeModel {
         if (more) rows.push({ kind: "group-more", key: `more:${project.key}`, projectKey: project.key, ...more, nextShown });
       }
     }
+  };
+
+  if (focus !== null) {
+    const project = resolver.get(focus);
+    const groupFamilies = projectFamilies.get(focus) ?? [];
+    // The project's sessions: a section of their own, always shown (also
+    // empty), folded to its header when the user says so.
+    let running = 0;
+    let unread = 0;
+    for (const family of groupFamilies) {
+      if (anyMemberIn(family, runningIds)) running++;
+      if (anyMemberIn(family, input.unreadIds)) unread++;
+    }
+    const sessionsCollapsed = input.sessionsCollapsed === true;
+    rows.push({ kind: "sessions-header", key: "sessions-header", count: groupFamilies.length, collapsed: sessionsCollapsed, running, unread });
+    if (!sessionsCollapsed) pushProject(project, groupFamilies, true);
+    // The project's archive, the third section: the fold is the sidebar's, so
+    // every pass reads the same rows, and it shows with nothing archived too.
+    {
+      rows.push({ kind: "spacer", key: "footer-spacer" });
+      const expanded = input.archivedExpanded === true;
+      rows.push({ kind: "archive-group", key: `archive:${project.key}`, project, count: focusedArchived.length, expanded });
+      if (expanded) {
+        const sorted = focusedArchived
+          .map((entry, index) => ({ ...entry, index }))
+          .sort((a, b) => compareDesc(a.archivedAt, b.archivedAt) || a.index - b.index);
+        for (const { family, archivedAt } of sorted) rows.push(sessionRow(family, "archive", project, input, archivedAt));
+      }
+    }
+    return {
+      rows,
+      projects: orderedProjects,
+      singleProject: true,
+      archivedCount,
+      unorderedKeysByBand,
+      projectKeysToRecord,
+    };
+  }
+
+  for (const project of orderedProjects) {
+    pushProject(project, projectFamilies.get(project.key) ?? [], isGroupExpanded(project, input.groupExpansion));
   }
 
   // Groups sit right on each other, open or folded: a gap between two of
@@ -539,7 +613,14 @@ export function buildSessionTree(input: SessionTreeInput): SessionTreeModel {
   rows.push({ kind: "footer-open", key: "footer-open" });
   if (archivedCount > 0) rows.push({ kind: "footer-archived", key: "footer-archived", count: archivedCount });
 
-  return { rows, projects: orderedProjects, archivedCount, unorderedKeysByBand, projectKeysToRecord };
+  return {
+    rows,
+    projects: orderedProjects,
+    singleProject: false,
+    archivedCount,
+    unorderedKeysByBand,
+    projectKeysToRecord,
+  };
 }
 
 /**
@@ -564,14 +645,16 @@ export function nextProjectKeysToRecord(toRecord: readonly string[], sent: Reado
  */
 export function buildArchiveRows(
   input: Pick<SessionTreeInput, "sessions" | "uiState" | "runningIds" | "awaitingIds" | "unreadIds" | "selectedSessionId" | "currentProject">
-    & { collapsed?: ReadonlySet<string> },
+    & { collapsed?: ReadonlySet<string>; focusProject?: string | null },
 ): SidebarRow[] {
   const { uiState, runningIds } = input;
+  const focus = input.focusProject ?? null;
   const flags: FamilyFlagsInput = input;
   const resolver = createProjectResolver(uiState, input.currentProject);
   const groups = new Map<string, { newest: number; families: { family: SessionFamily; archivedAt: number }[] }>();
 
   for (const family of listSessionFamilies(input.sessions)) {
+    if (focus !== null && familyProjectKey(family) !== focus) continue;
     if (!isFamilyArchived(family, uiState, runningIds)) continue;
     resolver.noteFamily(family);
     const archivedAt = finiteNumber(familyEntry(uiState, family.root.id)?.archivedAt) ?? 0;

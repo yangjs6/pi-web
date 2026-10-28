@@ -19,6 +19,7 @@ import {
   forgetKeptOpenGroups,
   forgetShownMoreOfFolded,
   isFamilyArchived,
+  isFamilyPinned,
   isGroupExpanded,
   keepOutgoingGroupOpen,
   nextProjectKeysToRecord,
@@ -31,7 +32,9 @@ import {
 import {
   forgetRetiredSidebarKeys,
   loadArchiveCollapsed,
+  loadArchivedSectionOpen,
   loadFilesCollapsed,
+  loadSessionsCollapsed,
   loadGroupExpansion,
   loadNonGitCwds,
   loadPinnedCollapsed,
@@ -39,7 +42,9 @@ import {
   loadSidebarTab,
   rememberCwdGitStatus,
   saveArchiveCollapsed,
+  saveArchivedSectionOpen,
   saveFilesCollapsed,
+  saveSessionsCollapsed,
   saveGroupExpansion,
   savePinnedCollapsed,
   saveShowIgnoredFiles,
@@ -541,6 +546,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const [changesCollapsed, setChangesCollapsed] = useState(true);
   const [showIgnoredFiles, setShowIgnoredFiles] = useState(false);
   const [explorerRefreshDone, setExplorerRefreshDone] = useState(false);
+  // The sessions' own refresh key (the panel's quick buttons): a forced
+  // reload, its ✓ shown for two seconds.
+  const [sessionsRefreshDone, setSessionsRefreshDone] = useState(false);
+  const sessionsRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [fileManager, setFileManager] = useState<FileManagerAvailability | null>(null);
   const [fileManagerError, setFileManagerError] = useState<string | null>(null);
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
@@ -585,6 +594,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const [pinnedCollapsed, setPinnedCollapsed] = useState(false);
   // The archive view's folded projects, per browser (lib/sidebar-prefs.ts).
   const [archiveCollapsed, setArchiveCollapsed] = useState<readonly string[]>([]);
+  // The single-project view's archive section: folded until opened.
+  const [archivedSectionOpen, setArchivedSectionOpen] = useState(false);
+  // ... and its sessions section, listed until folded.
+  const [sessionsSectionCollapsed, setSessionsSectionCollapsed] = useState(false);
   const [archiveView, setArchiveViewState] = useState(false);
   // The fold and the archive view move (hooks/useSidebarMotion.ts): only
   // when the user folds or goes in or out, never on a restore, a drag, keys,
@@ -739,6 +752,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     if (loadPinnedCollapsed()) setPinnedCollapsed(true);
     const archiveFolds = loadArchiveCollapsed();
     if (archiveFolds.length > 0) setArchiveCollapsed(archiveFolds);
+    if (loadArchivedSectionOpen()) setArchivedSectionOpen(true);
+    if (loadSessionsCollapsed()) setSessionsSectionCollapsed(true);
     if (loadFilesCollapsed()) setFilesCollapsed(true);
     if (loadShowIgnoredFiles()) setShowIgnoredFiles(true);
     forgetRetiredSidebarKeys();
@@ -791,6 +806,15 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       if (loadId === sessionLoadIdRef.current) setLoading(false);
     }
   }, []);
+
+  // The sessions panel's ⟳: a forced reload (the list is rescanned, which
+  // also brings in sessions the CLI created), then a ✓ for two seconds.
+  const refreshSessionsList = useCallback(() => {
+    void loadSessions(false, true);
+    setSessionsRefreshDone(true);
+    if (sessionsRefreshTimerRef.current) clearTimeout(sessionsRefreshTimerRef.current);
+    sessionsRefreshTimerRef.current = setTimeout(() => setSessionsRefreshDone(false), 2000);
+  }, [loadSessions]);
 
   const initialLoadDone = useRef(false);
   useEffect(() => {
@@ -1427,7 +1451,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     groupExpansion: shownGroupExpansion,
     moreShown,
     pinnedCollapsed,
-  }), [allSessions, uiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, shownGroupExpansion, moreShown, pinnedCollapsed]);
+    // One project at a time: the project box above the tree switches it.
+    focusProject: currentProjectKey,
+    archivedExpanded: archivedSectionOpen,
+    sessionsCollapsed: sessionsSectionCollapsed,
+  }), [allSessions, uiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, shownGroupExpansion, moreShown, pinnedCollapsed, currentProjectKey, archivedSectionOpen, sessionsSectionCollapsed]);
   // Built while the archive view is rendered, its way out included: it
   // leaves as it was, not empty.
   const archiveMounted = archiveMotion.archiveMounted;
@@ -1441,7 +1469,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     selectedSessionId,
     currentProject,
     collapsed: archiveCollapsedSet,
-  }) : []), [archiveMounted, allSessions, uiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, archiveCollapsedSet]);
+    focusProject: currentProjectKey,
+  }) : []), [archiveMounted, allSessions, uiState, runningSessionIds, awaitingInputSessionIds, unreadSessionIds, selectedSessionId, currentProject, archiveCollapsedSet, currentProjectKey]);
   // The archive's projects, top to bottom, folded or not.
   const archiveGroups = useMemo(
     () => archiveRows.flatMap((row) => (row.kind === "archive-group" ? [row] : [])),
@@ -1451,6 +1480,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     () => new Map(model.projects.map((project) => [project.key, project])),
     [model.projects],
   );
+  // The bar above the tree: the project the dropdown names, and the "⋯" that
+  // opens its menu (the one its group header would offer in the
+  // multi-project tree).
+  const currentProjectRow = currentProjectKey ? projectByKey.get(currentProjectKey) ?? null : null;
 
   // The project order is saved as projects turn up: a project without a place
   // renders at the top of its band, and saving it puts it at the top of the
@@ -1704,6 +1737,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     void applyUiState({ action: "set", ids: [family.root.id], pinned });
   }, [applyUiState]);
 
+  // A row's quick pin button: the pinned section's rows unpin, the others
+  // pin (which also restores an archived one, as its menu's Pin does).
+  const toggleFamilyPin = useCallback((family: SessionFamily) => {
+    setFamilyPinned(family, !isFamilyPinned(family, uiState, runningSessionIds));
+  }, [runningSessionIds, setFamilyPinned, uiState]);
+
   const markFamilyRead = useCallback((family: SessionFamily, read: boolean) => {
     setUnreadSessionIds((prev) => {
       const next = new Set(prev);
@@ -1772,9 +1811,24 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           focusAfterCommit(() => familyRowButton(archivable[0].root.id));
         },
       },
-      { id: "view", label: t("sidebar.viewArchive"), onClick: () => openArchiveView() },
+      {
+        id: "view",
+        label: t("sidebar.viewArchive"),
+        onClick: () => {
+          // The single-project tree holds its archive as a section of its own:
+          // open it and bring its header into view, instead of the archive view.
+          if (model.singleProject && currentProjectKey) {
+            setArchivedSectionOpen(true);
+            saveArchivedSectionOpen(true);
+            treeRevealIdRef.current += 1;
+            setTreeReveal({ id: treeRevealIdRef.current, at: Date.now(), rowKey: `archive:${currentProjectKey}`, block: "start" });
+            return;
+          }
+          openArchiveView();
+        },
+      },
     ]);
-  }, [applyUiState, focusAfterCommit, familyRowButton, openArchiveView, restoreUnread, showToast, snapshotUiState, t, unreadSessionIds]);
+  }, [applyUiState, currentProjectKey, focusAfterCommit, familyRowButton, model.singleProject, openArchiveView, restoreUnread, showToast, snapshotUiState, t, unreadSessionIds]);
 
   // The row's archive button. A running family would come straight back, so
   // it is not archived (the row offers no button for it either).
@@ -2108,6 +2162,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   // all…) and the bar's (fold every project, Restore all, the two deletes).
   // Their counts are live; Restore and Delete take what is archived when
   // chosen. An archived family never runs, so nothing is kept back.
+  // Only the tree's project is in view, so "all" means all of its archive:
+  // acting on the other projects' archived sessions from a view that does
+  // not show them would delete what the user cannot see.
   // A project's archive header (its toggle), else the archive's Back, else the selected tab.
   const archiveHeaderButton = useCallback((projectKey: string | null): HTMLElement | null => {
     const key = projectKey === null ? null : CSS.escape(`archive:${projectKey}`);
@@ -2138,10 +2195,15 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     });
   }, []);
 
-  const archiveDeleteIds = useCallback((scope: ArchiveDeleteScope | { projectKey: string }) => archivedFamilyIds(
-    treeSelectionInput,
-    scope === "all" ? {} : scope === "old" ? { archivedBefore: Date.now() - ARCHIVED_DELETE_AFTER_MS } : scope,
-  ), [treeSelectionInput]);
+  const archiveDeleteIds = useCallback((scope: ArchiveDeleteScope | { projectKey: string }) => {
+    const filter: { projectKey?: string; archivedBefore?: number } = scope === "all"
+      ? {}
+      : scope === "old" ? { archivedBefore: Date.now() - ARCHIVED_DELETE_AFTER_MS } : { projectKey: scope.projectKey };
+    const focused = currentProjectKey === null || filter.projectKey !== undefined
+      ? filter
+      : { ...filter, projectKey: currentProjectKey };
+    return archivedFamilyIds(treeSelectionInput, focused);
+  }, [currentProjectKey, treeSelectionInput]);
 
   const deleteArchived = useCallback((scope: ArchiveDeleteScope | { projectKey: string }) => {
     const ids = archiveDeleteIds(scope);
@@ -2169,6 +2231,23 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     const others = archiveCollapsed.filter((key) => key !== projectKey);
     saveArchiveFolds(expanded ? others : [...others, projectKey]);
   }, [archiveCollapsed, saveArchiveFolds, setAllArchiveGroupsExpanded]);
+
+  // The single-project view's own "Sessions" section, above the archive's.
+  const toggleSessionsSection = useCallback(() => {
+    setSessionsSectionCollapsed((collapsed) => {
+      saveSessionsCollapsed(!collapsed);
+      return !collapsed;
+    });
+  }, []);
+
+  // The single-project view's archive section, under the sessions: one fold
+  // for the project (the project box above says which), saved per browser.
+  const toggleArchivedSection = useCallback(() => {
+    setArchivedSectionOpen((open) => {
+      saveArchivedSectionOpen(!open);
+      return !open;
+    });
+  }, []);
 
   // A group's "+": a new session at once. The current project starts in the
   // sidebar's worktree, another one in its root (the main checkout); the bar
@@ -2338,31 +2417,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       onSelect: () => { void applyUiState({ action: "rename-project", projectKey: project.key, name: null }); },
     }));
     // Three groups, by what they act on: the project itself, its place in the
-    // list, its sessions (Delete all last, in red).
-    return [
-      {
-        type: "item",
-        id: "pin-project",
-        label: t(project.pinned ? "sidebar.unpinProject" : "sidebar.pinProject"),
-        icon: project.pinned ? <PinOffIcon /> : <PinIcon />,
-        onSelect: () => { void applyUiState({ action: "pin-project", projectKey: project.key, root: project.root, pinned: !project.pinned }); },
-      },
-      ...nameItems,
-      {
-        type: "item",
-        id: "open-in-files",
-        label: t("sidebar.openInFilesTab"),
-        icon: <FolderIcon />,
-        onSelect: () => openProjectInFiles(project),
-      },
-      {
-        type: "item",
-        id: "open-new-tab",
-        label: t("sidebar.openInNewTab"),
-        icon: <OpenInNewTabIcon />,
-        shortcut: "T",
-        onSelect: () => openProjectInNewTab(project),
-      },
+    // list, its sessions (Delete all last, in red). The list's order and
+    // folds mean nothing while one project is focused: no group rows are
+    // shown, so those entries are left out.
+    const orderItems: SidebarMenuItem[] = model.singleProject ? [] : [
       { type: "separator", id: "separator-layout" },
       {
         type: "item",
@@ -2397,6 +2455,32 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         disabled: model.projects.every((other) => isGroupExpanded(other, shownGroupExpansion)),
         onSelect: () => setAllGroupsExpanded(() => true),
       },
+    ];
+    return [
+      {
+        type: "item",
+        id: "pin-project",
+        label: t(project.pinned ? "sidebar.unpinProject" : "sidebar.pinProject"),
+        icon: project.pinned ? <PinOffIcon /> : <PinIcon />,
+        onSelect: () => { void applyUiState({ action: "pin-project", projectKey: project.key, root: project.root, pinned: !project.pinned }); },
+      },
+      ...nameItems,
+      {
+        type: "item",
+        id: "open-in-files",
+        label: t("sidebar.openInFilesTab"),
+        icon: <FolderIcon />,
+        onSelect: () => openProjectInFiles(project),
+      },
+      {
+        type: "item",
+        id: "open-new-tab",
+        label: t("sidebar.openInNewTab"),
+        icon: <OpenInNewTabIcon />,
+        shortcut: "T",
+        onSelect: () => openProjectInNewTab(project),
+      },
+      ...orderItems,
       { type: "separator", id: "separator-sessions" },
       {
         type: "item",
@@ -2406,14 +2490,16 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         disabled: olderCount === 0,
         onSelect: () => archiveOlderSessions(project),
       },
-      {
-        type: "item",
+      // The single-project tree lists the archive under the sessions: there is
+      // no view to open from there.
+      ...(model.singleProject ? [] : [{
+        type: "item" as const,
         id: "view-archived",
         label: t("sidebar.viewArchived", { count: archivedCount }),
         icon: <ArchiveIcon />,
         disabled: archivedCount === 0,
         onSelect: () => openArchiveView(project.key),
-      },
+      }]),
       {
         type: "item",
         id: "delete-all",
@@ -2620,6 +2706,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     onShowMore: handleShowMore,
     onShowLess: handleShowLess,
     onTogglePinned: handleTogglePinned,
+    onToggleFamilyPin: toggleFamilyPin,
+    showPinnedProject: !model.singleProject,
     onArchiveFamily: archiveFamily,
     onRestoreFamily: restoreFamily,
     onOpenRowMenu: openRowMenu,
@@ -2883,8 +2971,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         </button>
       </div>
 
-      {/* Sessions: every project's sessions, or the archive. A tab's panel,
-          or the top section, always shown, filling what the files leave. */}
+      {/* Sessions: the selected project's sessions, or its archive. A tab's
+          panel, or the top section, always shown, filling what the files
+          leave. */}
       <div
         ref={sessionsPanelRef}
         id="session-sidebar-panel-sessions"
@@ -2895,6 +2984,63 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         className="sidebar-panel sidebar-sessions-panel"
         onScrollCapture={rememberScroll}
       >
+        {/* The project this tree lists: the same project box the files have,
+            at the top, showing what is open now (the earlier sidebar's
+            workspace selector), then New, Refresh and the project's ⋯ (the
+            menu its group header has in the multi-project tree). Above the
+            archive view too: that view is the project's archive. */}
+        <div className="sidebar-sessions-picker">
+          <ProjectWorktreePicker
+            layout={isMobile ? "stacked" : "row"}
+            // The sessions switch projects; which checkout a new session
+            // starts in is the composer's bar's (or the files tab's) choice.
+            showWorktree={false}
+            context={newSessionContext ?? { project: null, worktrees: null, currentWorktreePath: null, projects: projectChoiceList }}
+            mobile={isMobile}
+            label={t("workspace.project")}
+            placeholder={t("sidebar.selectProject")}
+            homeDir={homeDir}
+            projectActivity={projectActivity}
+            newWorktreeTitle={t("sidebar.createWorktreeTitle")}
+            onPick={handleFilesPick}
+            onUseDefaultDirectory={() => { void handleDefaultCwd(); }}
+            onOpenFolder={handleCustomPathClick}
+            onRefreshWorktrees={refreshWorktrees}
+            onCreateWorktree={createWorktree}
+          />
+          <button
+            type="button"
+            className="sidebar-project-menu-button"
+            disabled={!selectedCwd}
+            aria-label={t("sidebar.new")}
+            title={selectedCwd ? t("sidebar.newSessionTitle", { path: selectedCwd }) : t("sidebar.selectProject")}
+            onClick={handleNewSession}
+          >
+            <PlusIcon size={14} />
+          </button>
+          <button
+            type="button"
+            className="sidebar-project-menu-button"
+            aria-label={t("sidebar.refresh")}
+            title={t("sidebar.refresh")}
+            onClick={refreshSessionsList}
+          >
+            {sessionsRefreshDone ? <CheckIcon size={14} /> : <RefreshIcon size={14} />}
+          </button>
+          {currentProjectRow && (
+            <button
+              type="button"
+              className={`sidebar-project-menu-button${menu?.kind === "group" && menu.project.key === currentProjectRow.key ? " is-active" : ""}`}
+              aria-label={t("sidebar.projectActions", { name: currentProjectRow.name })}
+              title={t("sidebar.projectActions", { name: currentProjectRow.name })}
+              aria-haspopup="menu"
+              aria-expanded={menu?.kind === "group" && menu.project.key === currentProjectRow.key}
+              onClick={(event) => handleGroupMenu(currentProjectRow, event.currentTarget)}
+            >
+              <MoreIcon size={14} />
+            </button>
+          )}
+        </div>
         {sessionSearchOpen && (
           <div className="sidebar-search">
             <input
@@ -2935,6 +3081,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                 emptyLabel={t("sidebar.noSessions")}
                 reveal={treeReveal}
                 onRevealHandled={handleRevealHandled}
+                // The focused project's archive is a section of the same list;
+                // the fold is the sidebar's own (not the archive view's).
+                onToggleSessionsSection={model.singleProject ? toggleSessionsSection : undefined}
+                onToggleArchiveGroup={model.singleProject ? toggleArchivedSection : undefined}
+                archiveSectionLabel={model.singleProject ? t("sidebar.archived") : null}
               />
             </div>
             {/* Mounted while open and on its way out, inert then, so nothing
